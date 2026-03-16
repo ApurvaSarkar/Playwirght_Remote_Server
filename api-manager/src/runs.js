@@ -107,7 +107,10 @@ export async function finishRun(workerId, status = 'completed') {
   activeRuns.delete(workerId)
 
   // Use in-memory error flag — avoids a race with unfinished appendCommand writes
-  const finalStatus = (status === 'completed' && runHasError.get(workerId)) ? 'failed' : status
+  // Priority: stopped (client disconnect) > failed (error commands) > completed
+  const finalStatus = status === 'stopped' ? 'stopped'
+    : (status === 'completed' && runHasError.get(workerId)) ? 'failed'
+    : status
   runHasError.delete(workerId)
 
   await pool.query(
@@ -116,6 +119,67 @@ export async function finishRun(workerId, status = 'completed') {
   )
   console.log(`[runs] finished run ${runId} status=${finalStatus}`)
   return runId
+}
+
+/**
+ * Mark a run as failed from client-side (e.g. assertion errors not caught by wire protocol).
+ * Sets the in-memory error flag so finishRun will use 'failed' status.
+ */
+export async function markRunFailed(runId, error) {
+  // Find the workerId for this run so we can set the error flag
+  for (const [wId, rId] of activeRuns.entries()) {
+    if (rId === runId) {
+      runHasError.set(wId, true)
+      console.log(`[runs] client reported failure for run ${runId} worker=${wId}: ${error || '(no message)'}`)
+      return
+    }
+  }
+  // Run already finished or not in activeRuns — update DB directly
+  await pool.query(
+    `UPDATE runs SET status = 'failed' WHERE run_id = $1 AND status NOT IN ('failed', 'stopped')`,
+    [runId],
+  )
+  console.log(`[runs] client reported failure for finished run ${runId}: ${error || '(no message)'}`)
+}
+
+/**
+ * Mark the active run for a worker as failed (client knows workerId from acquire-worker).
+ * Also stores the error as a command entry so it appears in the dashboard command list.
+ * Returns the run_id if found.
+ */
+export async function markRunFailedByWorker(workerId, error) {
+  const runId = activeRuns.get(workerId)
+  if (runId) {
+    runHasError.set(workerId, true)
+    // Store the assertion error as a command entry so it shows in the dashboard
+    const ts = Date.now()
+    await pool.query(
+      `INSERT INTO run_commands (run_id, method, label, param, error, ts)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [runId, 'assertion', 'Assertion Failed', null, error || 'Test assertion failed', ts],
+    )
+    console.log(`[runs] client reported failure for worker=${workerId} run=${runId}: ${error || '(no message)'}`)
+    return runId
+  }
+  // No active run — find the most recent run for this worker and update it
+  const { rows } = await pool.query(
+    `UPDATE runs SET status = 'failed'
+     WHERE worker_id = $1 AND status NOT IN ('failed', 'stopped')
+     ORDER BY started_at DESC LIMIT 1
+     RETURNING run_id`,
+    [workerId],
+  )
+  const id = rows[0]?.run_id || null
+  if (id) {
+    const ts = Date.now()
+    await pool.query(
+      `INSERT INTO run_commands (run_id, method, label, param, error, ts)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [id, 'assertion', 'Assertion Failed', null, error || 'Test assertion failed', ts],
+    )
+  }
+  console.log(`[runs] client reported failure for worker=${workerId} (no active run, updated=${id}): ${error || '(no message)'}`)
+  return id
 }
 
 async function resolveRunId(workerId) {

@@ -339,7 +339,7 @@ def set_build_name(name: str | None) -> None:
     _build_name = name
 
 
-def register(status: str) -> None:
+def register(status: str, disconnect_reason: str = None) -> None:
     global _status
     _status = status
     payload = {
@@ -353,6 +353,8 @@ def register(status: str) -> None:
         payload["scenarioName"] = _scenario
     if _build_name:
         payload["buildName"] = _build_name
+    if disconnect_reason:
+        payload["disconnectReason"] = disconnect_reason
     data = json.dumps(payload)
     r.setex(f"worker:{WORKER_ID}", 30, data)
     r.publish("worker:status", data)
@@ -575,6 +577,24 @@ async def handle_connection(client_ws):
         qs_build = parse_qs(urlparse(path).query)
         build_name = qs_build.get("build_identifier", [None])[0]
 
+    # Fall back to X-Client-Id header or ?client_id= query param
+    if not build_name:
+        client_id = None
+        if hasattr(client_ws, 'request_headers'):
+            client_id = client_ws.request_headers.get('x-client-id') or \
+                        client_ws.request_headers.get('X-Client-Id')
+        if not client_id:
+            qs_client = parse_qs(urlparse(path).query)
+            client_id = qs_client.get("client_id", [None])[0]
+        if client_id:
+            build_name = client_id
+
+    # Reject connections without any build identity
+    if not build_name:
+        print(f"[proxy] REJECTED connection — no build_identifier or client_id provided", flush=True)
+        await client_ws.close(4400, "Missing build identity: set --build_id or CLIENT_ID in your .env")
+        return
+
     print(f"[proxy] new connection path={path!r} scenario={scenario!r} build={build_name!r}", flush=True)
     set_scenario(scenario)
     set_build_name(build_name)
@@ -590,7 +610,7 @@ async def handle_connection(client_ws):
     # Skip x-scenario-name — it's only for our proxy, not for playwright.
     _skip = {'host', 'connection', 'upgrade', 'sec-websocket-key',
              'sec-websocket-version', 'sec-websocket-extensions', 'sec-websocket-accept',
-             'x-scenario-name', 'x-build-identifier'}
+             'x-scenario-name', 'x-build-identifier', 'x-client-id'}
     extra_headers = {}
     if hasattr(client_ws, 'request_headers'):
         extra_headers = {k: v for k, v in client_ws.request_headers.items()
@@ -729,10 +749,16 @@ async def handle_connection(client_ws):
             )
             for task in pending_tasks:
                 task.cancel()
+            # Tasks completed normally — client called browser.close()
+            disconnect_reason = "clean"
             print(f"[proxy] connection closed ← {path} ({msg_count[0]} messages)", flush=True)
-    except (ConnectionClosed, OSError):
-        pass
+    except (ConnectionClosed, OSError) as e:
+        # Client killed, network drop, or timeout — abnormal disconnect
+        disconnect_reason = "stopped"
+        close_code = getattr(e, "code", None) if isinstance(e, ConnectionClosed) else None
+        print(f"[proxy] connection lost ← {path} close_code={close_code}", flush=True)
     except Exception as e:
+        disconnect_reason = "stopped"
         print(f"[proxy] error: {e}", flush=True)
     finally:
         # Stop video recording before going idle so the video is finalized
@@ -741,7 +767,7 @@ async def handle_connection(client_ws):
         set_build_name(None)
         # Register idle here — after all proxy tasks have finished — so the error
         # command is guaranteed to be in Redis before the idle status fires.
-        register("idle")
+        register("idle", disconnect_reason=disconnect_reason)
 
 
 async def run_proxy() -> None:
@@ -793,6 +819,29 @@ def stream_logs() -> None:
 
 
 threading.Thread(target=stream_logs, daemon=True).start()
+
+
+# 7. Listen for screenshot capture requests from API manager
+def listen_capture_requests() -> None:
+    """Subscribe to Redis for on-demand screenshot capture (e.g. client assertion failures)."""
+    sub = redis.from_url(REDIS_URL, decode_responses=True)
+    ps = sub.pubsub()
+    ps.subscribe("worker:capture-screenshot")
+    for msg in ps.listen():
+        if msg["type"] != "message":
+            continue
+        try:
+            data = json.loads(msg["data"])
+            if data.get("workerId") != WORKER_ID:
+                continue
+            error_msg = data.get("error", "Assertion failed")
+            cmd = {"label": "Assertion Failed", "param": ""}
+            capture_screenshot(cmd, error_msg)
+        except Exception as e:
+            print(f"[capture-request] error: {e}", flush=True)
+
+
+threading.Thread(target=listen_capture_requests, daemon=True).start()
 
 
 def shutdown(sig, frame):

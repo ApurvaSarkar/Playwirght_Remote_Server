@@ -149,6 +149,8 @@ const workerBadgeColor = (() => {
 })()
 
 function cmdBadgeColor(label) {
+  if (label === 'Assertion Failed')
+    return 'bg-red-900 text-red-200'
   if (label.startsWith('Navigate') || label === 'Reload Page' || label === 'Navigate Back' || label === 'Navigate Forward')
     return 'bg-blue-900 text-blue-200'
   if (['Click', 'Double Click', 'Tap', 'Hover', 'Check', 'Uncheck', 'Select Option', 'Key Press'].includes(label))
@@ -258,32 +260,36 @@ function cmdBadgeColor(label) {
           v-for="(cmd, i) in displayCommands"
           :key="i"
           :class="[
-            'flex items-center gap-3 px-4 py-2.5 border-b text-sm',
+            'px-4 py-2.5 border-b text-sm',
             cmd.error
               ? 'border-red-900/60 bg-red-950/30 hover:bg-red-950/50'
               : 'border-slate-800/60 hover:bg-slate-900/80',
           ]"
         >
-          <!-- Status icon -->
-          <span v-if="cmd.error" class="text-red-400 shrink-0 text-xs">&#x2715;</span>
-          <span v-else class="text-green-500 shrink-0 text-xs">&#x2713;</span>
+          <div class="flex items-center gap-3">
+            <!-- Status icon -->
+            <span v-if="cmd.error" class="text-red-400 shrink-0 text-xs">&#x2715;</span>
+            <span v-else class="text-green-500 shrink-0 text-xs">&#x2713;</span>
 
-          <!-- Command label -->
-          <span class="text-sm text-slate-200 font-medium shrink-0">{{ cmd.label }}</span>
+            <!-- Command label -->
+            <span class="text-sm text-slate-200 font-medium shrink-0">{{ cmd.label }}</span>
 
-          <!-- Param badge -->
-          <span v-if="cmd.param" :class="['text-xs px-1.5 py-0.5 rounded font-mono shrink-0', cmdBadgeColor(cmd.label)]">
-            {{ cmd.param }}
-          </span>
+            <!-- Param badge -->
+            <span v-if="cmd.param" :class="['text-xs px-1.5 py-0.5 rounded font-mono shrink-0', cmdBadgeColor(cmd.label)]">
+              {{ cmd.param }}
+            </span>
 
-          <!-- Spacer -->
-          <span class="flex-1"></span>
+            <!-- Spacer -->
+            <span class="flex-1"></span>
 
-          <!-- Elapsed time -->
-          <span class="text-xs text-slate-500 font-mono shrink-0">{{ elapsed(cmd.timestamp) }}</span>
+            <!-- Elapsed time -->
+            <span class="text-xs text-slate-500 font-mono shrink-0">{{ elapsed(cmd.timestamp) }}</span>
+          </div>
 
-          <!-- Error row below (if error) -->
-          <div v-if="cmd.error" class="absolute"></div>
+          <!-- Error message -->
+          <div v-if="cmd.error" class="mt-1.5 ml-7 text-xs text-red-400 font-mono break-all leading-relaxed">
+            {{ cmd.error }}
+          </div>
         </div>
       </div>
     </div>

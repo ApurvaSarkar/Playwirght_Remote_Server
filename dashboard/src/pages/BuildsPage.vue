@@ -16,39 +16,24 @@ const now = ref(Date.now())
 const timer = setInterval(() => { now.value = Date.now() }, 1000)
 onUnmounted(() => clearInterval(timer))
 
-// Derive builds directly from store.runs (reactive, no re-fetch needed)
+// Derive builds directly from store.runs — every run must have a buildName
 const buildsList = computed(() => {
   const byBuild = {}
-  const singles = []
 
   for (const r of store.runs) {
-    if (r.buildName) {
-      if (!byBuild[r.buildName]) {
-        byBuild[r.buildName] = {
-          type: 'build',
-          build_name: r.buildName,
-          runs: [],
-        }
+    // Group by buildName; fall back to workerId for legacy runs without one
+    const key = r.buildName || r.workerId
+    if (!byBuild[key]) {
+      byBuild[key] = {
+        type: 'build',
+        build_name: r.buildName || r.workerId.slice(-8),
+        runs: [],
       }
-      byBuild[r.buildName].runs.push(r)
-    } else {
-      singles.push({
-        type: 'run',
-        run_id: r.id,
-        build_name: r.scenarioName || null,
-        run_count: 1,
-        command_count: r.commandCount || 0,
-        started_at: r.startTime,
-        finished_at: r.endTime,
-        status: r.status === 'passed' ? 'completed' : r.status,
-        passed_count: r.status === 'passed' ? 1 : 0,
-        failed_count: r.status === 'failed' ? 1 : 0,
-        running_count: r.status === 'running' ? 1 : 0,
-      })
     }
+    byBuild[key].runs.push(r)
   }
 
-  const builds = Object.values(byBuild).map((g) => {
+  return Object.values(byBuild).map((g) => {
     const runs = g.runs
     return {
       type: 'build',
@@ -58,14 +43,14 @@ const buildsList = computed(() => {
       started_at: Math.min(...runs.map((r) => r.startTime)),
       finished_at: runs.every((r) => r.endTime) ? Math.max(...runs.map((r) => r.endTime)) : null,
       status: runs.some((r) => r.status === 'running') ? 'running'
-        : runs.some((r) => r.status === 'failed') ? 'failed' : 'completed',
+        : runs.some((r) => r.status === 'failed') ? 'failed'
+        : runs.some((r) => r.status === 'stopped') ? 'stopped' : 'completed',
       passed_count: runs.filter((r) => r.status === 'passed').length,
       failed_count: runs.filter((r) => r.status === 'failed').length,
       running_count: runs.filter((r) => r.status === 'running').length,
+      stopped_count: runs.filter((r) => r.status === 'stopped').length,
     }
-  })
-
-  return [...builds, ...singles].sort((a, b) => b.started_at - a.started_at)
+  }).sort((a, b) => b.started_at - a.started_at)
 })
 
 // Group builds by date label (Today, Yesterday, or formatted date)
@@ -105,6 +90,7 @@ function displayName(b) {
 function statusIcon(b) {
   if (b.status === 'running') return 'running'
   if (b.status === 'failed') return 'failed'
+  if (b.status === 'stopped') return 'stopped'
   if (b.status === 'completed') return 'passed'
   return b.status
 }
@@ -134,12 +120,7 @@ function fmtTimeAgo(b) {
 }
 
 function openBuild(b) {
-  if (b.type === 'build') {
-    router.push({ name: 'dashboard', query: { build: b.build_name } })
-  } else {
-    store.selectRun(b.run_id)
-    router.push({ name: 'dashboard-run', params: { runId: b.run_id } })
-  }
+  router.push({ name: 'dashboard', query: { build: b.build_name } })
 }
 </script>
 
@@ -230,6 +211,11 @@ function openBuild(b) {
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
                 </svg>
               </span>
+              <span v-else-if="statusIcon(b) === 'stopped'" class="flex items-center justify-center w-6 h-6 rounded-full bg-orange-500/20">
+                <svg class="w-3.5 h-3.5 text-orange-400" fill="currentColor" viewBox="0 0 24 24">
+                  <rect x="6" y="6" width="12" height="12" rx="1"/>
+                </svg>
+              </span>
               <span v-else class="flex items-center justify-center w-6 h-6 rounded-full bg-red-500/20">
                 <svg class="w-3.5 h-3.5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M6 18L18 6M6 6l12 12"/>
@@ -281,6 +267,11 @@ function openBuild(b) {
                   v-if="b.failed_count"
                   class="h-full bg-red-500"
                   :style="{ width: (b.failed_count / b.run_count * 100) + '%' }"
+                ></div>
+                <div
+                  v-if="b.stopped_count"
+                  class="h-full bg-orange-500"
+                  :style="{ width: (b.stopped_count / b.run_count * 100) + '%' }"
                 ></div>
                 <div
                   v-if="b.running_count"

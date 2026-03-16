@@ -5,7 +5,7 @@ import IORedis from 'ioredis'
 
 import { initDb } from './db.js'
 import fastifyStatic from '@fastify/static'
-import { recoverActiveRuns, registerBuild, startRun, finishRun, appendCommand, appendLog, appendScreenshot, setVideoFilename, listRuns, listBuilds, getBuildRuns, getRun, getScreenshots } from './runs.js'
+import { recoverActiveRuns, registerBuild, startRun, finishRun, markRunFailed, markRunFailedByWorker, appendCommand, appendLog, appendScreenshot, setVideoFilename, listRuns, listBuilds, getBuildRuns, getRun, getScreenshots } from './runs.js'
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379'
 
@@ -124,6 +124,52 @@ fastify.post('/api/builds/register', async (request, reply) => {
   return { name: resolvedName }
 })
 
+// Client reports test failure (assertion errors that aren't Playwright command errors)
+// Can use run ID or worker ID — worker ID is available from acquire-worker response
+fastify.post('/api/runs/:runId/result', async (request, reply) => {
+  const { runId } = request.params
+  const { status, error } = request.body || {}
+  if (!status || !['passed', 'failed'].includes(status)) {
+    return reply.status(400).send({ error: 'status must be "passed" or "failed"' })
+  }
+  if (status === 'failed') {
+    await markRunFailed(runId, error)
+    io.emit('run:result', { runId, status: 'failed', error })
+  }
+  return { ok: true }
+})
+
+// Report result by worker ID (client gets workerId from acquire-worker, not run_id)
+fastify.post('/api/workers/:workerId/result', async (request, reply) => {
+  const { workerId } = request.params
+  const { status, error } = request.body || {}
+  if (!status || !['passed', 'failed'].includes(status)) {
+    return reply.status(400).send({ error: 'status must be "passed" or "failed"' })
+  }
+  if (status === 'failed') {
+    const runId = await markRunFailedByWorker(workerId, error)
+    if (runId) {
+      const ts = Date.now()
+      // Emit the error as a command so it shows in the dashboard command list in real-time
+      io.emit('worker:command', {
+        workerId,
+        method: 'assertion',
+        label: 'Assertion Failed',
+        param: null,
+        error: error || 'Test assertion failed',
+        timestamp: ts,
+      })
+      io.emit('run:result', { runId, status: 'failed', error })
+      // Tell the worker to capture a screenshot of the current browser state
+      await redis.publish('worker:capture-screenshot', JSON.stringify({
+        workerId,
+        error: error || 'Test assertion failed',
+      }))
+    }
+  }
+  return { ok: true }
+})
+
 // Builds listing — runs ordered by date for the /builds dashboard page
 fastify.get('/api/builds', async (request) => {
   const limit = Math.min(parseInt(request.query.limit) || 50, 200)
@@ -156,7 +202,8 @@ subscriber.on('message', (channel, raw) => {
         })
       }).catch((e) => console.error('[runs] startRun error:', e.message))
     } else if (data.status === 'idle') {
-      finishRun(data.id, 'completed').catch((e) =>
+      const finishStatus = data.disconnectReason === 'stopped' ? 'stopped' : 'completed'
+      finishRun(data.id, finishStatus).catch((e) =>
         console.error('[runs] finishRun error:', e.message),
       )
     }

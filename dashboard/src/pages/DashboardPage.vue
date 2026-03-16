@@ -206,9 +206,10 @@ function selectRunFromSidebar(runId) {
             'text-xs font-bold uppercase px-2.5 py-0.5 rounded',
             selectedRunObj.status === 'running' ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-600' :
             selectedRunObj.status === 'passed' ? 'bg-green-500/20 text-green-300 border border-green-600' :
+            selectedRunObj.status === 'stopped' ? 'bg-orange-500/20 text-orange-300 border border-orange-600' :
             'bg-red-500/20 text-red-300 border border-red-600',
           ]"
-        >{{ selectedRunObj.status === 'running' ? 'Running' : selectedRunObj.status === 'passed' ? 'Passed' : 'Failed' }}</span>
+        >{{ selectedRunObj.status === 'running' ? 'Running' : selectedRunObj.status === 'passed' ? 'Passed' : selectedRunObj.status === 'stopped' ? 'Stopped' : 'Failed' }}</span>
         <h2 class="text-sm font-semibold text-slate-100">{{ selectedRunObj.scenarioName }}</h2>
       </div>
       <div class="flex items-center gap-5 text-xs text-slate-400">
@@ -266,12 +267,14 @@ function selectRunFromSidebar(runId) {
                 run.status === 'failed' ? 'border-l-2 border-l-red-600' : '',
                 run.status === 'passed' ? 'border-l-2 border-l-green-600' : '',
                 run.status === 'running' ? 'border-l-2 border-l-yellow-500' : '',
+                run.status === 'stopped' ? 'border-l-2 border-l-orange-500' : '',
               ]"
             >
               <!-- Status icon -->
               <span class="shrink-0 w-4 flex justify-center pt-0.5">
                 <span v-if="run.status === 'running'" class="w-2 h-2 rounded-full bg-yellow-400 animate-pulse mt-1 block"></span>
                 <span v-else-if="run.status === 'passed'" class="text-green-400 text-sm leading-none">&#x2713;</span>
+                <span v-else-if="run.status === 'stopped'" class="text-orange-400 text-sm leading-none">&#x25A0;</span>
                 <span v-else class="text-red-400 text-sm leading-none">&#x2715;</span>
               </span>
 

@@ -1,6 +1,13 @@
 import { defineStore } from 'pinia'
 import { socket } from './socket.js'
 
+// Strip parameterized suffix: "Test Name[param=val,...]" → "Test Name"
+function stripParams(name) {
+  if (!name) return name
+  const idx = name.indexOf('[')
+  return idx > 0 ? name.slice(0, idx).trim() : name
+}
+
 const MAX_LOGS = 500
 const MAX_COMMANDS = 500
 const MAX_RUNS = 100
@@ -99,7 +106,7 @@ export const useStore = defineStore('main', {
           const rows = await res.json()
           this.runs = rows.map((r) => ({
             id: r.run_id,
-            scenarioName: r.scenario || r.worker_id.slice(-8),
+            scenarioName: stripParams(r.scenario) || r.worker_id.slice(-8),
             buildName: r.build_name || null,
             workerId: r.worker_id,
             status: r.status === 'completed' ? 'passed' : r.status,
@@ -140,7 +147,8 @@ export const useStore = defineStore('main', {
             (r) => r.workerId === worker.id && r.status === 'running',
           )
           if (run) {
-            run.status = run.hasError ? 'failed' : 'passed'
+            run.status = worker.disconnectReason === 'stopped' ? 'stopped'
+              : run.hasError ? 'failed' : 'passed'
             run.endTime = worker.lastHeartbeat
           }
         }
@@ -158,7 +166,7 @@ export const useStore = defineStore('main', {
 
         this.runs.unshift({
           id: runId,
-          scenarioName: scenarioName || workerId.slice(-8),
+          scenarioName: stripParams(scenarioName) || workerId.slice(-8),
           buildName: buildName || null,
           workerId,
           status: 'running',
@@ -167,6 +175,18 @@ export const useStore = defineStore('main', {
           hasError,
         })
         if (this.runs.length > MAX_RUNS) this.runs.splice(MAX_RUNS)
+      })
+
+      // Client reported test result (e.g. assertion failure not caught by wire protocol)
+      socket.on('run:result', ({ runId, status }) => {
+        const run = this.runs.find((r) => r.id === runId)
+        if (run && status === 'failed') {
+          run.hasError = true
+          // If run already finished, update status directly
+          if (run.status !== 'running') {
+            run.status = 'failed'
+          }
+        }
       })
 
       socket.on('queue:length', (count) => {
@@ -246,7 +266,7 @@ export const useStore = defineStore('main', {
             .filter((r) => !existingIds.has(r.run_id))
             .map((r) => ({
               id: r.run_id,
-              scenarioName: r.scenario || r.worker_id.slice(-8),
+              scenarioName: stripParams(r.scenario) || r.worker_id.slice(-8),
               buildName: r.build_name || null,
               workerId: r.worker_id,
               status: r.status === 'completed' ? 'passed' : r.status,
