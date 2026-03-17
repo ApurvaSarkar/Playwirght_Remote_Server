@@ -1,4 +1,4 @@
-# Playwright Remote Server
+# Playwright Remote Server Test
 
 A distributed Playwright remote server cluster. Run `playwright run-server` across multiple Docker containers, load-balanced behind Nginx, with a real-time monitoring dashboard and optional public access via ngrok.
 
